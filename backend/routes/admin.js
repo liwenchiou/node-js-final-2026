@@ -1,6 +1,5 @@
 const express = require('express');
 const router = express.Router();
-const { z } = require('zod');
 const { AppDataSource } = require('../utils/dataSource');
 const User = require('../entities/User');
 const Coach = require('../entities/Coach');
