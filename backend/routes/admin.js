@@ -17,7 +17,7 @@ const isCoach = async (req, res, next) => {
   });
   
   if (!coach) {
-    return sendFailed(res, 403, '此使用者不是教練');
+    return sendFailed(res, 401, '使用者尚未成為教練');
   }
   
   req.coach = coach; // 把查到的教練資料掛在 req 上，後面的 API 就可以直接拿來用了
@@ -46,42 +46,34 @@ router.put('/coaches', verifyToken, isCoach, async (req, res, next) => {
   try {
     const { experience_years, description, profile_image_url, skill_ids } = req.body;
 
-    if (experience_years !== undefined && (typeof experience_years !== 'number' || experience_years < 0 || !Number.isInteger(experience_years))) {
-      return sendFailed(res, 400, '欄位驗證失敗');
+    if (
+      experience_years === undefined || typeof experience_years !== 'number' || experience_years < 0 || !Number.isInteger(experience_years) ||
+      !description || typeof description !== 'string' || description.trim() === '' ||
+      !profile_image_url || typeof profile_image_url !== 'string' || !profile_image_url.startsWith('https://') ||
+      !Array.isArray(skill_ids) || skill_ids.length === 0 || !skill_ids.every(id => typeof id === 'string' && isValidUUID(id))
+    ) {
+      return sendFailed(res, 400, '欄位未填寫正確');
     }
-    if (description !== undefined && typeof description !== 'string') {
-      return sendFailed(res, 400, '欄位驗證失敗');
-    }
-    if (profile_image_url !== undefined) {
-      if (typeof profile_image_url !== 'string' || !profile_image_url.startsWith('https://')) {
-        return sendFailed(res, 400, '欄位驗證失敗'); // 測試要求必須是 https 開頭
-      }
-    }
-    if (skill_ids !== undefined) {
-      if (!Array.isArray(skill_ids) || !skill_ids.every(id => typeof id === 'string' && isValidUUID(id))) {
-        return sendFailed(res, 400, '欄位驗證失敗');
-      }
-    }
+    
     const coachRepo = AppDataSource.getRepository(Coach);
     const skillRepo = AppDataSource.getRepository(Skill);
     
-    if (experience_years !== undefined) req.coach.experience_years = experience_years;
-    if (description !== undefined) req.coach.description = description;
-    if (profile_image_url !== undefined) req.coach.profile_image_url = profile_image_url;
+    req.coach.experience_years = experience_years;
+    req.coach.description = description;
+    req.coach.profile_image_url = profile_image_url;
     
-    if (skill_ids) {
-      const { In } = require('typeorm');
-      const skills = await skillRepo.find({ where: { id: In(skill_ids) } });
-      req.coach.skills = skills;
-    }
+    const { In } = require('typeorm');
+    const skills = await skillRepo.find({ where: { id: In(skill_ids) } });
+    req.coach.skills = skills;
     
     await coachRepo.save(req.coach);
     
     return sendSuccess(res, 200, {
-      image_url: req.coach.profile_image_url,
-      skill_ids: req.coach.skills ? req.coach.skills.map(s => s.id) : [],
+      id: req.coach.id,
       experience_years: req.coach.experience_years,
       description: req.coach.description,
+      profile_image_url: req.coach.profile_image_url,
+      skill_ids: req.coach.skills ? req.coach.skills.map(s => s.id) : [],
     });
   } catch (error) {
     next(error);
@@ -138,18 +130,18 @@ router.post('/coaches/courses', verifyToken, isCoach, async (req, res, next) => 
 router.get('/coaches/courses', verifyToken, isCoach, async (req, res, next) => {
   try {
     const courseRepo = AppDataSource.getRepository(Course);
+    const bookingRepo = AppDataSource.getRepository(CourseBooking);
+    const { IsNull } = require('typeorm');
     
     // 先找出這個教練開的所有課 (利用目前登入的 user_id 去對應)
     const courses = await courseRepo.find({
       where: { user: { id: req.user.id } },
-      relations: { skill: true },
       order: { created_at: 'DESC' },
     });
     
     const now = new Date();
     
-    const data = courses.map(course => {
-      // 練習手動判斷課程的狀態：看目前時間是在課前、課中還是課後
+    const data = await Promise.all(courses.map(async (course) => {
       const startDate = new Date(course.start_at);
       const endDate = new Date(course.end_at);
       let status = '尚未開始';
@@ -159,17 +151,24 @@ router.get('/coaches/courses', verifyToken, isCoach, async (req, res, next) => {
         status = '進行中';
       }
       
+      const participants = await bookingRepo.count({
+        where: {
+          course: { id: course.id },
+          cancelled_at: IsNull(),
+        },
+      });
+      
       return {
         id: course.id,
         name: course.name,
-        skill_id: course.skill ? course.skill.id : null,
         status,
-        participants: 0, // 這裡先偷懶寫死，M3 作業還沒要求算出真的報名人數
         start_at: course.start_at,
         end_at: course.end_at,
         max_participants: course.max_participants,
+        meeting_url: course.meeting_url,
+        participants,
       };
-    });
+    }));
     
     return sendSuccess(res, 200, data);
   } catch (error) {

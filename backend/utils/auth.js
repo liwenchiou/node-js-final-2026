@@ -27,14 +27,17 @@ const verifyToken = async (req, res, next) => {
     const currentUser = await userRepo.findOne({ where: { id: decoded.id } });
 
     if (!currentUser) {
-      return sendFailed(res, 401, '無效的 token，使用者不存在');
+      return sendFailed(res, 401, '無效的 token');
     }
 
     // 將 user 資訊附加到 req 上供後續 route 使用
     req.user = currentUser;
     next();
   } catch (error) {
-    return sendFailed(res, 401, '請先登入');
+    if (error.name === 'TokenExpiredError') {
+      return sendFailed(res, 401, 'Token 已過期');
+    }
+    return sendFailed(res, 401, '無效的 token');
   }
 };
 
